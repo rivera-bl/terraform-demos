@@ -1,0 +1,140 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: "Creates a aws config rule that is triggered periodically and generates a cloudwatch event with a lambda function as remediation "   
+
+Parameters:
+  S3bucket:
+    Type: String
+    Default: usach-autoremediacion-repo
+    Description: Nombre del bucket donde se enceuntran sus lambda functions en formato .zip
+  
+  Email:
+    Type: String
+    Default: paredes.justo.jp@gmail.com
+    Description: direccion de correo que recibira una alarma en caso que la funcion tenga un error
+  
+  Exclusions:
+    Type: String
+    Description: Lista de buckets a ser excluidos separada por comas
+
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: Allow
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      Policies: 
+        - PolicyName: "PolicyForS3-Lifecycle"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "s3:*"
+                Resource: "*"
+        
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      FunctionName: FINOPS-REMEDIATION-S3_LIFECYCLE_INTELLIGENT_TIERING
+      Description: "Set up a data life cycle rule to move Objects to Intelligent Tiering after 30 days "
+      Runtime: "python3.8"
+      Timeout: 600 #seconds
+      Handler: s3-lifecycle-lambda.lambda_handler
+      Role:
+        Fn::GetAtt:
+          - LambdaExecutionRole
+          - Arn
+      Code:
+        S3Bucket: !Ref S3bucket # Bucket in Shared-Services account
+        S3Key: "s3-lifecycle-lambda.zip"
+      Environment:
+        Variables:
+          "Exclusions": !Ref Exclusions
+  
+  LambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties: 
+      LogGroupName: '/aws/lambda/FINOPS-REMEDIATION-S3_LIFECYCLE_INTELLIGENT_TIERING'
+      RetentionInDays: 30
+
+  EventRule: 
+    Type: AWS::Events::Rule
+    Properties: 
+      Description: EventRule
+      EventPattern: 
+        source: 
+          - "aws.config"
+        detail: 
+          requestParameters:
+            evaluations:
+              complianceType:
+                - "NON_COMPLIANT"
+          additionalEventData: 
+            configRuleName:
+              - "FINOPS_CUSTOM_RULE_S3_LIFECYCLE_INTELLIGENT_TIERING"
+    
+      State: "ENABLED"
+      Targets: 
+        - 
+          Arn: 
+            Fn::GetAtt: 
+              - "LambdaFunction"
+              - "Arn"
+          Id: "FINOPS-REMEDIATION-S3_LIFECYCLE_INTELLIGENT_TIERING"
+  
+  PermissionForEventsToInvokeLambda: 
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+          Fn::GetAtt:
+            - LambdaFunction
+            - Arn
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: 
+        Fn::GetAtt: 
+          - EventRule
+          - Arn
+
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm that triggers when the s3 lambda function fails."
+      AlarmName: "LambdaErrorsAlarm-FINOPS-REMEDIATION-S3_LIFECYCLE_INTELLIGENT_TIERING"
+      AlarmActions:
+      - !Ref ErrorNotificationsTopic
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      Dimensions:
+      - Name: FunctionName
+        Value:
+          !Ref LambdaFunction
+
+  ErrorNotificationsTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      TopicName: "FINOPS-REMEDIATION-S3_LIFECYCLE_INTELLIGENT_TIERING-lambda-Errors-Topic"
+      Subscription:
+        #subscription defined inline
+        -
+          Endpoint: !Ref Email
+          Protocol: "email"

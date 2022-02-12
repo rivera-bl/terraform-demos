@@ -1,0 +1,132 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: "Creates an AWS Config rule and Lambda to check all S3 buckets"
+
+Parameters:
+
+  NameOfSolution:
+    Type: String
+    Default: FINOPS_CUSTOM_RULE_S3_LIFECYCLE_INTELLIGENT_TIERING
+    Description: Nombre de la solucion
+
+  S3bucket:
+    Type: String
+    Default: usach-autoremediacion-repo
+    Description: Nombre del bucket donde se enceuntran sus lambda functions en formato .zip
+  
+  Email:
+    Type: String
+    Default: paredes.justo.jp@gmail.com
+    Description: direccion de correo que recibira una alarma en caso que la funcion tenga un error
+
+Resources:
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    DependsOn: CheckS3LifeCycleConfig
+    Properties: 
+      FunctionName: !GetAtt CheckS3LifeCycleConfig.Arn
+      Action: lambda:InvokeFunction
+      Principal: config.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${NameOfSolution}-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+      Policies:
+      - PolicyName: !Sub '${NameOfSolution}'
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - config:PutEvaluations
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - iam:GetAccountAuthorizationDetails
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - s3:*
+            Resource: '*'
+          - Effect: Allow
+            Action:
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+            Resource:
+            - !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:*:log-group:/aws/lambda/${NameOfSolution}:log-stream:*'
+
+  CheckS3LifeCycleConfig:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: "Checks S3 LifeCycle Configuration"
+      FunctionName: !Sub '${NameOfSolution}'
+      Handler: config-lambda_function.evaluate_compliance
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.7
+      Timeout: 300
+      Code:
+        S3Bucket: !Ref S3bucket # Bucket 
+        S3Key: "config-lambda_function.zip"
+   
+
+  LambdaLogGroup:
+    Type: 'AWS::Logs::LogGroup'
+    Properties: 
+      LogGroupName: !Sub '/aws/lambda/${NameOfSolution}'
+      RetentionInDays: 30
+  
+  LambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "Alarm that triggers when the s3 lambda function fails."
+      AlarmName: "LambdaErrorsAlarm-FINOPS_CUSTOM_RULE_S3_LIFECYCLE_INTELLIGENT_TIERING"
+      AlarmActions:
+      - !Ref ErrorNotificationsTopic
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: '300'
+      EvaluationPeriods: '1'
+      Threshold: '1'
+      Dimensions:
+      - Name: FunctionName
+        Value:
+          !Ref CheckS3LifeCycleConfig
+
+  ErrorNotificationsTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      TopicName: "FINOPS_CUSTOM_RULE_S3_LIFECYCLE_INTELLIGENT_TIERING-lambda-Errors-Topic"
+      Subscription:
+        #subscription defined inline
+        -
+          Endpoint: !Ref Email
+          Protocol: "email"
+  
+  ConfigCustomRule:
+    Type: 'AWS::Config::ConfigRule'
+    DependsOn:
+    - LambdaInvokePermission
+    - LambdaExecutionRole
+    Properties:
+      ConfigRuleName: !Sub '${NameOfSolution}'
+      Description: Checks the S3 LifeCycle Configuration.  If is not configured , it is marked as non-compliant.
+      Source: 
+        Owner: CUSTOM_LAMBDA
+        SourceDetails: 
+        - EventSource: aws.config
+          MaximumExecutionFrequency: TwentyFour_Hours
+          MessageType: ScheduledNotification
+        SourceIdentifier: !GetAtt CheckS3LifeCycleConfig.Arn

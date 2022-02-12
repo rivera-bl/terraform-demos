@@ -1,0 +1,6 @@
+#!/bin/bash
+
+echo "set -o vi" >> /home/ec2-user/.bashrc
+yum install pip -y
+pip install tweepy
+pip install boto3
