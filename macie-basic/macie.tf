@@ -3,13 +3,9 @@ resource "aws_macie2_account" "this" {
 }
 
 resource "aws_macie2_classification_job" "this" {
-  job_type    = "SCHEDULED"
+  job_type    = "ONE_TIME"
   initial_run = true
   name_prefix = var.proj_name
-
-  schedule_frequency {
-    daily_schedule = "true"
-  }
 
   s3_job_definition {
     bucket_definitions {

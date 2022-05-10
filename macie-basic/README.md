@@ -11,7 +11,7 @@ TODO
 [ ] solucionar que la remediacion no funciona
   - llave kms?
 [ ] permitir la decriptación a un unico usuario/servicio a través de una bucket policy
-[ ] autoremediar la encriptación
+[ ] crear la remediacion
 
 DUDAS
 
